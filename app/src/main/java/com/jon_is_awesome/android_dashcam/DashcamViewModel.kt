@@ -1,0 +1,433 @@
+package com.jon_is_awesome.android_dashcam
+
+import android.content.Context
+import android.graphics.*
+import android.os.Handler
+import android.os.HandlerThread
+import android.util.Log
+import androidx.camera.core.*
+import androidx.camera.core.ConcurrentCamera.SingleCameraConfig
+import androidx.camera.effects.OverlayEffect
+import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.video.Recorder
+import androidx.camera.video.VideoCapture
+import androidx.camera.view.PreviewView
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.*
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+
+class DashcamViewModel : ViewModel() {
+
+    private val _isDualCameraSupported = MutableStateFlow(false)
+    val isDualCameraSupported: StateFlow<Boolean> = _isDualCameraSupported.asStateFlow()
+
+    private val _useDualCamera = MutableStateFlow(false)
+    val useDualCamera: StateFlow<Boolean> = _useDualCamera.asStateFlow()
+
+    private val _telemetryData = MutableStateFlow(TelemetryData())
+    val telemetryData: StateFlow<TelemetryData> = _telemetryData.asStateFlow()
+
+    private var primaryVideoCapture: VideoCapture<Recorder>? = null
+    private var locationTracker: LocationTracker? = null
+    private var recordingManager: RecordingManager? = null
+    private var settingsManager: SettingsManager? = null
+
+    private val _isInitialized = MutableStateFlow(false)
+    val isInitialized: StateFlow<Boolean> = _isInitialized.asStateFlow()
+
+    // Settings
+    private val _segmentLengthMinutes = MutableStateFlow(5)
+    val segmentLengthMinutes: StateFlow<Int> = _segmentLengthMinutes.asStateFlow()
+
+    private val _showSpeed = MutableStateFlow(true)
+    val showSpeed: StateFlow<Boolean> = _showSpeed.asStateFlow()
+
+    private val _showCoordinates = MutableStateFlow(true)
+    val showCoordinates: StateFlow<Boolean> = _showCoordinates.asStateFlow()
+
+    private val _showAltitude = MutableStateFlow(true)
+    val showAltitude: StateFlow<Boolean> = _showAltitude.asStateFlow()
+
+    private val _showTimestamp = MutableStateFlow(true)
+    val showTimestamp: StateFlow<Boolean> = _showTimestamp.asStateFlow()
+
+    val isRecording: StateFlow<Boolean> = flow {
+        while (true) {
+            emit(recordingManager?.isRecording?.value ?: false)
+            kotlinx.coroutines.delay(500)
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    val totalDurationMillis: StateFlow<Long> = flow {
+        while (true) {
+            emit(recordingManager?.totalDurationMillis?.value ?: 0L)
+            kotlinx.coroutines.delay(1000)
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0L)
+
+    val segmentDurationMillis: StateFlow<Long> = flow {
+        while (true) {
+            emit(recordingManager?.segmentDurationMillis?.value ?: 0L)
+            kotlinx.coroutines.delay(1000)
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0L)
+
+    private val _isLocked = MutableStateFlow(false)
+    val isLocked: StateFlow<Boolean> = _isLocked.asStateFlow()
+
+    private var currentLifecycleOwner: LifecycleOwner? = null
+    private var currentPreviewView: PreviewView? = null
+    
+    private var lastFrontBitmap: Bitmap? = null
+    private val bitmapLock = Any()
+
+    private val cameraExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+    private val effectHandlerThread = HandlerThread("CameraEffectThread").apply { start() }
+    private val effectHandler = Handler(effectHandlerThread.looper)
+    
+    private var activeOverlayEffect: OverlayEffect? = null
+    private var lastLogTime = 0L
+
+    fun startLocationUpdates(context: Context) {
+        if (_isInitialized.value) return
+        val settings = SettingsManager(context)
+        settingsManager = settings
+        locationTracker = LocationTracker(context)
+        
+        settings.segmentLengthMinutes.onEach { _segmentLengthMinutes.value = it }.launchIn(viewModelScope)
+        settings.showSpeed.onEach { _showSpeed.value = it }.launchIn(viewModelScope)
+        settings.showCoordinates.onEach { _showCoordinates.value = it }.launchIn(viewModelScope)
+        settings.showAltitude.onEach { _showAltitude.value = it }.launchIn(viewModelScope)
+        settings.showTimestamp.onEach { _showTimestamp.value = it }.launchIn(viewModelScope)
+
+        _isInitialized.value = true
+        
+        // Start telemetry updates
+        locationTracker?.getLocationUpdates()?.onEach { data ->
+            _telemetryData.value = data
+        }?.launchIn(viewModelScope)
+    }
+
+    fun checkDualCameraSupport(context: Context) {
+        val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
+        cameraProviderFuture.addListener({
+            try {
+                val cameraProvider = cameraProviderFuture.get()
+                val concurrentCameras = cameraProvider.availableConcurrentCameraInfos
+                _isDualCameraSupported.value = concurrentCameras.isNotEmpty()
+                Log.d("Dashcam", "Dual camera supported: ${_isDualCameraSupported.value}. Pair count: ${concurrentCameras.size}")
+            } catch (e: Exception) {
+                Log.e("Dashcam", "Error checking dual camera support", e)
+            }
+        }, ContextCompat.getMainExecutor(context))
+    }
+
+    fun toggleDualCamera(context: Context) {
+        if (_isDualCameraSupported.value) {
+            _useDualCamera.value = !_useDualCamera.value
+            Log.d("Dashcam", "Toggled Dual Camera: ${_useDualCamera.value}")
+            val lifecycleOwner = currentLifecycleOwner
+            val previewView = currentPreviewView
+            if (lifecycleOwner != null && previewView != null) {
+                bindCamera(context, lifecycleOwner, previewView)
+            }
+        }
+    }
+
+    fun bindCamera(
+        context: Context,
+        lifecycleOwner: LifecycleOwner,
+        previewView: PreviewView
+    ) {
+        currentLifecycleOwner = lifecycleOwner
+        currentPreviewView = previewView
+        
+        if (!_isInitialized.value) startLocationUpdates(context)
+
+        val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
+        cameraProviderFuture.addListener({
+            val cameraProvider = cameraProviderFuture.get()
+            cameraProvider.unbindAll()
+            
+            // Reuse the same OverlayEffect to avoid GL context recreation crashes
+            if (activeOverlayEffect == null) {
+                activeOverlayEffect = createOverlayEffect()
+            }
+            val overlayEffect = activeOverlayEffect!!
+
+            // Setup Primary (Back) Camera
+            val primaryRecorder = Recorder.Builder().build()
+            val primaryVC = VideoCapture.withOutput(primaryRecorder)
+            primaryVideoCapture = primaryVC
+
+            val primaryPreview = Preview.Builder().build().apply {
+                setSurfaceProvider(previewView.surfaceProvider)
+            }
+
+            // Setup Secondary (Front) Camera Analysis for PiP
+            var frontAnalysis: ImageAnalysis? = null
+            if (_useDualCamera.value && _isDualCameraSupported.value) {
+                frontAnalysis = ImageAnalysis.Builder()
+                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                    .setTargetResolution(android.util.Size(640, 480))
+                    .build()
+                
+                frontAnalysis.setAnalyzer(cameraExecutor) { imageProxy ->
+                    try {
+                        val bitmap = imageProxy.toBitmap()
+                        val rotation = imageProxy.imageInfo.rotationDegrees
+                        
+                        val rotatedBitmap = if (rotation != 0) {
+                            val matrix = Matrix().apply { postRotate(rotation.toFloat()) }
+                            Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true).also {
+                                bitmap.recycle()
+                            }
+                        } else {
+                            bitmap
+                        }
+
+                        synchronized(bitmapLock) {
+                            val old = lastFrontBitmap
+                            lastFrontBitmap = rotatedBitmap
+                            old?.recycle()
+                        }
+                    } catch (e: Exception) {
+                        Log.e("Dashcam", "Error analyzing front camera frame", e)
+                    } finally {
+                        imageProxy.close()
+                    }
+                }
+                Log.d("Dashcam", "Front camera analyzer initialized")
+            }
+
+            val settings = settingsManager
+            if (recordingManager == null && settings != null) {
+                recordingManager = RecordingManager(context, primaryVC, null, settings, telemetryData)
+                viewModelScope.launch {
+                    recordingManager?.isLocked?.collect { _isLocked.value = it }
+                }
+            } else {
+                recordingManager?.updateVideoCaptures(primaryVC, null)
+            }
+
+            try {
+                if (_useDualCamera.value && _isDualCameraSupported.value && frontAnalysis != null) {
+                    // Correct way to bind concurrent cameras
+                    val backGroup = UseCaseGroup.Builder()
+                        .addUseCase(primaryPreview)
+                        .addUseCase(primaryVC)
+                        .addEffect(overlayEffect)
+                        .build()
+                    val frontGroup = UseCaseGroup.Builder()
+                        .addUseCase(frontAnalysis)
+                        .build()
+                    
+                    val configs = mutableListOf<SingleCameraConfig>()
+                    val concurrentInfos = cameraProvider.availableConcurrentCameraInfos
+                    if (concurrentInfos.isNotEmpty()) {
+                        val pair = concurrentInfos[0] // Take the first available pair
+                        for (info in pair) {
+                            if (info.lensFacing == CameraSelector.LENS_FACING_BACK) {
+                                configs.add(SingleCameraConfig(info.cameraSelector, backGroup, lifecycleOwner))
+                            } else if (info.lensFacing == CameraSelector.LENS_FACING_FRONT) {
+                                configs.add(SingleCameraConfig(info.cameraSelector, frontGroup, lifecycleOwner))
+                            }
+                        }
+                    }
+                    
+                    if (configs.size == 2) {
+                        cameraProvider.bindToLifecycle(configs)
+                        Log.d("Dashcam", "Successfully bound concurrent cameras")
+                    } else {
+                        // Fallback if pair logic fails
+                        Log.w("Dashcam", "Could not form configs for concurrent camera, falling back to back only")
+                        cameraProvider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, backGroup)
+                    }
+                } else {
+                    val useCaseGroup = UseCaseGroup.Builder()
+                        .addUseCase(primaryPreview)
+                        .addUseCase(primaryVC)
+                        .addEffect(overlayEffect)
+                        .build()
+                    cameraProvider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, useCaseGroup)
+                    Log.d("Dashcam", "Bound primary camera only")
+                }
+            } catch (e: Exception) {
+                Log.e("Dashcam", "Use case binding failed", e)
+            }
+        }, ContextCompat.getMainExecutor(context))
+    }
+
+    private fun createOverlayEffect(): OverlayEffect {
+        val paint = Paint().apply {
+            color = Color.YELLOW
+            textSize = 40f
+            typeface = Typeface.MONOSPACE
+            style = Paint.Style.FILL
+            setShadowLayer(2f, 1f, 1f, Color.BLACK)
+        }
+        
+        val bgPaint = Paint().apply {
+            color = Color.argb(128, 0, 0, 0)
+            style = Paint.Style.FILL
+        }
+
+        val borderPaint = Paint().apply {
+            color = Color.WHITE
+            style = Paint.Style.STROKE
+            strokeWidth = 4f
+        }
+
+        val overlayEffect = OverlayEffect(
+            CameraEffect.VIDEO_CAPTURE or CameraEffect.PREVIEW,
+            1,
+            effectHandler
+        ) { throwable ->
+            Log.e("Dashcam", "OverlayEffect error", throwable)
+        }
+
+        overlayEffect.setOnDrawListener { frame ->
+            val canvas = frame.overlayCanvas
+            val width = canvas.width.toFloat()
+            val height = canvas.height.toFloat()
+            
+            canvas.save()
+            
+            // Rotate the canvas around its center to handle output rotation
+            val rotation = frame.rotationDegrees.toFloat()
+            canvas.rotate(rotation, width / 2f, height / 2f)
+            
+            // Visually upright dimensions
+            val isRotated = frame.rotationDegrees == 90 || frame.rotationDegrees == 270
+            val vWidth = if (isRotated) height else width
+            val vHeight = if (isRotated) width else height
+            
+            // Translation to align (0,0) with the visible top-left
+            when (rotation) {
+                90f -> canvas.translate(0f, -width)
+                180f -> canvas.translate(-width, -height)
+                270f -> canvas.translate(-height, 0f)
+            }
+
+            // 1. Draw Telemetry
+            val data = telemetryData.value
+            val lines = mutableListOf<String>()
+            if (_showSpeed.value) lines.add(String.format(Locale.getDefault(), "%.1f km/h", data.speedKmh))
+            if (_showCoordinates.value) lines.add(String.format(Locale.getDefault(), "%.6f, %.6f", data.latitude, data.longitude))
+            if (_showAltitude.value) lines.add(String.format(Locale.getDefault(), "Alt: %.1f m", data.altitude))
+            if (_showTimestamp.value) {
+                val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+                lines.add(sdf.format(Date()))
+            }
+            
+            var yOffset = vHeight - 40f
+            for (line in lines.reversed()) {
+                val textWidth = paint.measureText(line)
+                canvas.drawRect(20f, yOffset - 35f, 30f + textWidth, yOffset + 10f, bgPaint)
+                canvas.drawText(line, 25f, yOffset, paint)
+                yOffset -= 50f
+            }
+            
+            // 2. Draw PiP (Front Camera)
+            if (_useDualCamera.value) {
+                synchronized(bitmapLock) {
+                    val bitmap = lastFrontBitmap
+                    val now = System.currentTimeMillis()
+                    if (now - lastLogTime > 5000) {
+                        Log.d("Dashcam", "Overlay drawing. PiP Enabled: true, Has Bitmap: ${bitmap != null}")
+                        lastLogTime = now
+                    }
+
+                    if (bitmap != null && !bitmap.isRecycled) {
+                        val pipWidth = vWidth / 3.5f
+                        val pipHeight = (bitmap.height.toFloat() / bitmap.width.toFloat() * pipWidth)
+                        val rect = RectF(vWidth - pipWidth - 30f, 30f, vWidth - 30f, 30f + pipHeight)
+                        
+                        canvas.drawRect(rect.left - 2f, rect.top - 2f, rect.right + 2f, rect.bottom + 2f, borderPaint)
+                        canvas.drawBitmap(bitmap, null, rect, null)
+                    } else {
+                        // Optional: draw a placeholder if we're supposed to have PiP but no frame yet
+                        val pipWidth = vWidth / 3.5f
+                        val pipHeight = pipWidth * 1.33f
+                        val rect = RectF(vWidth - pipWidth - 30f, 30f, vWidth - 30f, 30f + pipHeight)
+                        canvas.drawRect(rect, bgPaint)
+                        canvas.drawRect(rect, borderPaint)
+                    }
+                }
+            }
+            
+            canvas.restore()
+            true
+        }
+        
+        return overlayEffect
+    }
+
+    fun onRecordClick() {
+        val manager = recordingManager ?: return
+        if (manager.isRecording.value) {
+            manager.stopRecording()
+        } else {
+            manager.startRecording()
+        }
+    }
+
+    fun onLockClick() {
+        recordingManager?.lockCurrentSegment()
+    }
+
+    fun setSegmentLength(minutes: Int) {
+        viewModelScope.launch { 
+            settingsManager?.setSegmentLength(minutes)
+            _segmentLengthMinutes.value = minutes
+        }
+    }
+    
+    fun setShowSpeed(show: Boolean) {
+        viewModelScope.launch { 
+            settingsManager?.setShowSpeed(show)
+            _showSpeed.value = show
+        }
+    }
+    
+    fun setShowCoordinates(show: Boolean) {
+        viewModelScope.launch { 
+            settingsManager?.setShowCoordinates(show)
+            _showCoordinates.value = show
+        }
+    }
+    
+    fun setShowAltitude(show: Boolean) {
+        viewModelScope.launch { 
+            settingsManager?.setShowAltitude(show)
+            _showAltitude.value = show
+        }
+    }
+    
+    fun setShowTimestamp(show: Boolean) {
+        viewModelScope.launch { 
+            settingsManager?.setShowTimestamp(show)
+            _showTimestamp.value = show
+        }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        recordingManager?.stopRecording()
+        activeOverlayEffect?.close()
+        cameraExecutor.shutdown()
+        effectHandlerThread.quitSafely()
+        synchronized(bitmapLock) {
+            lastFrontBitmap?.recycle()
+            lastFrontBitmap = null
+        }
+    }
+}
