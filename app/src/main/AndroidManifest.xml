@@ -24,10 +24,9 @@
             android:name=".MainActivity"
             android:exported="true"
             android:label="@string/app_name"
-            android:supportsPictureInPicture="true"
             android:resizeableActivity="true"
             android:launchMode="singleTop"
-            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation|keyboard|keyboardHidden|uiMode"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|uiMode"
             android:theme="@style/Theme.AndroidDashcam">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

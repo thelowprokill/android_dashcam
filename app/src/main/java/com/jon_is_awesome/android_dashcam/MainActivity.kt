@@ -1,13 +1,9 @@
 package com.jon_is_awesome.android_dashcam
 
 import android.Manifest
-import android.app.PictureInPictureParams
 import android.content.pm.PackageManager
-import android.content.res.Configuration
-import android.os.Build
 import android.os.Bundle
 import android.util.Log
-import android.util.Rational
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -46,29 +42,22 @@ import java.util.concurrent.TimeUnit
 
 class MainActivity : ComponentActivity() {
     private val viewModel: DashcamViewModel by viewModels()
-    private val _isInPipMode = mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        Log.d("Dashcam", "MainActivity onCreate. PiP supported: ${packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)}")
+        Log.d("Dashcam", "MainActivity onCreate")
         
         enableEdgeToEdge()
         
-        // Initial PiP params
-        updatePipParams()
-
         setContent {
             AndroidDashcamTheme {
                 val navController = rememberNavController()
-                val isInPip by _isInPipMode
                 
                 NavHost(navController = navController, startDestination = "dashcam") {
                     composable("dashcam") {
                         DashcamScreen(
                             viewModel = viewModel,
-                            onNavigateToSettings = { navController.navigate("settings") },
-                            onEnterPip = { enterPip() },
-                            isInPipMode = isInPip
+                            onNavigateToSettings = { navController.navigate("settings") }
                         )
                     }
                     composable("settings") {
@@ -81,76 +70,13 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
-
-    private fun updatePipParams() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val aspectRatio = if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
-                Rational(16, 9)
-            } else {
-                Rational(9, 16)
-            }
-            
-            val builder = PictureInPictureParams.Builder()
-                .setAspectRatio(aspectRatio)
-            
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                builder.setAutoEnterEnabled(true)
-                builder.setSeamlessResizeEnabled(true)
-            }
-            
-            setPictureInPictureParams(builder.build())
-            Log.d("Dashcam", "PiP params updated. Orientation: ${resources.configuration.orientation}")
-        }
-    }
-
-    override fun onUserLeaveHint() {
-        super.onUserLeaveHint()
-        Log.d("Dashcam", "onUserLeaveHint called")
-        // Manual trigger for older versions or as a fail-safe
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            enterPip()
-        }
-    }
-
-    private fun enterPip() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            Log.d("Dashcam", "Manually entering PiP")
-            val aspectRatio = if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
-                Rational(16, 9)
-            } else {
-                Rational(9, 16)
-            }
-            val params = PictureInPictureParams.Builder()
-                .setAspectRatio(aspectRatio)
-                .build()
-            val success = enterPictureInPictureMode(params)
-            Log.d("Dashcam", "enterPictureInPictureMode result: $success")
-        }
-    }
-
-    override fun onPictureInPictureModeChanged(
-        isInPictureInPictureMode: Boolean,
-        newConfig: Configuration
-    ) {
-        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
-        Log.d("Dashcam", "onPictureInPictureModeChanged: $isInPictureInPictureMode")
-        _isInPipMode.value = isInPictureInPictureMode
-        updatePipParams()
-    }
-    
-    override fun onConfigurationChanged(newConfig: Configuration) {
-        super.onConfigurationChanged(newConfig)
-        updatePipParams()
-    }
 }
 
 @OptIn(ExperimentalPermissionsApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun DashcamScreen(
     viewModel: DashcamViewModel,
-    onNavigateToSettings: () -> Unit,
-    onEnterPip: () -> Unit,
-    isInPipMode: Boolean = false
+    onNavigateToSettings: () -> Unit
 ) {
     val permissionsState = rememberMultiplePermissionsState(
         permissions = listOf(
@@ -189,61 +115,54 @@ fun DashcamScreen(
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         topBar = {
-            if (!isInPipMode) {
-                CenterAlignedTopAppBar(
-                    title = { 
-                        Text(
-                            "Android Dashcam", 
-                            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
-                        ) 
-                    },
-                    actions = {
-                        IconButton(onClick = onEnterPip) {
-                            Icon(Icons.Default.PictureInPicture, contentDescription = "Enter PiP")
-                        }
-                        IconButton(onClick = onNavigateToSettings) {
-                            Icon(Icons.Default.Settings, contentDescription = "Settings")
-                        }
-                    },
-                    colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
-                        containerColor = Color.Black.copy(alpha = 0.3f),
-                        titleContentColor = Color.White,
-                        actionIconContentColor = Color.White
-                    )
+            CenterAlignedTopAppBar(
+                title = { 
+                    Text(
+                        "Android Dashcam", 
+                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
+                    ) 
+                },
+                actions = {
+                    IconButton(onClick = onNavigateToSettings) {
+                        Icon(Icons.Default.Settings, contentDescription = "Settings")
+                    }
+                },
+                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
+                    containerColor = Color.Black.copy(alpha = 0.3f),
+                    titleContentColor = Color.White,
+                    actionIconContentColor = Color.White
                 )
-            }
+            )
         },
         floatingActionButton = {
-            if (!isInPipMode) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    if (isRecording) {
-                        FloatingActionButton(
-                            onClick = { viewModel.onLockClick() },
-                            containerColor = if (isLocked) Color.Yellow else MaterialTheme.colorScheme.tertiary,
-                            contentColor = if (isLocked) Color.Black else MaterialTheme.colorScheme.onTertiary,
-                            shape = CircleShape,
-                            modifier = Modifier.padding(bottom = 16.dp).size(56.dp)
-                        ) {
-                            Icon(
-                                imageVector = if (isLocked) Icons.Default.Lock else Icons.Default.LockOpen,
-                                contentDescription = "Lock Recording"
-                            )
-                        }
-                    }
-                    
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                if (isRecording) {
                     FloatingActionButton(
-                        onClick = { viewModel.onRecordClick() },
-                        containerColor = if (isRecording) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
-                        contentColor = if (isRecording) MaterialTheme.colorScheme.onError else MaterialTheme.colorScheme.onPrimary,
+                        onClick = { viewModel.onLockClick() },
+                        containerColor = if (isLocked) Color.Yellow else MaterialTheme.colorScheme.tertiary,
+                        contentColor = if (isLocked) Color.Black else MaterialTheme.colorScheme.onTertiary,
                         shape = CircleShape,
-                        modifier = Modifier.size(80.dp)
+                        modifier = Modifier.padding(bottom = 16.dp).size(56.dp)
                     ) {
                         Icon(
-                            imageVector = if (isRecording) Icons.Default.Stop else Icons.Default.FiberManualRecord,
-                            contentDescription = if (isRecording) "Stop Recording" else "Start Recording",
-                            modifier = Modifier.size(48.dp)
+                            imageVector = if (isLocked) Icons.Default.Lock else Icons.Default.LockOpen,
+                            contentDescription = "Lock Recording"
                         )
                     }
+                }
+                
+                FloatingActionButton(
+                    onClick = { viewModel.onRecordClick() },
+                    containerColor = if (isRecording) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                    contentColor = if (isRecording) MaterialTheme.colorScheme.onError else MaterialTheme.colorScheme.onPrimary,
+                    shape = CircleShape,
+                    modifier = Modifier.size(80.dp)
+                ) {
+                    Icon(
+                        imageVector = if (isRecording) Icons.Default.Stop else Icons.Default.FiberManualRecord,
+                        contentDescription = if (isRecording) "Stop Recording" else "Start Recording",
+                        modifier = Modifier.size(48.dp)
+                    )
                 }
             }
         },
@@ -270,7 +189,7 @@ fun DashcamScreen(
                     showTimestamp = showTimestamp,
                     modifier = Modifier
                         .align(Alignment.BottomStart)
-                        .padding(bottom = if (isInPipMode) 16.dp else 120.dp, start = 16.dp, end = 16.dp)
+                        .padding(bottom = 120.dp, start = 16.dp, end = 16.dp)
                 )
 
                 // Recording and Dual Camera Status
@@ -295,24 +214,22 @@ fun DashcamScreen(
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Text("RECORDING", color = Color.White, style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold))
                                 }
-                                if (!isInPipMode) {
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Text(
-                                        text = "Total: ${formatDuration(totalDuration)}",
-                                        color = Color.White,
-                                        style = MaterialTheme.typography.labelSmall
-                                    )
-                                    Text(
-                                        text = "Seg: ${formatDuration(segmentDuration)}",
-                                        color = Color.White,
-                                        style = MaterialTheme.typography.labelSmall
-                                    )
-                                }
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = "Total: ${formatDuration(totalDuration)}",
+                                    color = Color.White,
+                                    style = MaterialTheme.typography.labelSmall
+                                )
+                                Text(
+                                    text = "Seg: ${formatDuration(segmentDuration)}",
+                                    color = Color.White,
+                                    style = MaterialTheme.typography.labelSmall
+                                )
                             }
                         }
                     }
                     
-                    if (isDualCameraSupported && !isInPipMode) {
+                    if (isDualCameraSupported) {
                         Spacer(modifier = Modifier.height(12.dp))
                         FilledTonalButton(
                             onClick = { viewModel.toggleDualCamera(context) },
@@ -325,25 +242,23 @@ fun DashcamScreen(
                     }
                 }
                 
-                if (!isInPipMode) {
-                    AnimatedVisibility(
-                        visible = isLocked,
-                        enter = fadeIn(),
-                        exit = fadeOut(),
-                        modifier = Modifier.align(Alignment.Center)
+                AnimatedVisibility(
+                    visible = isLocked,
+                    enter = fadeIn(),
+                    exit = fadeOut(),
+                    modifier = Modifier.align(Alignment.Center)
+                ) {
+                    Surface(
+                        color = Color.Yellow.copy(alpha = 0.9f),
+                        shape = RoundedCornerShape(16.dp)
                     ) {
-                        Surface(
-                            color = Color.Yellow.copy(alpha = 0.9f),
-                            shape = RoundedCornerShape(16.dp)
+                        Row(
+                            modifier = Modifier.padding(24.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Row(
-                                modifier = Modifier.padding(24.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(Icons.Default.Lock, contentDescription = null, tint = Color.Black, modifier = Modifier.size(32.dp))
-                                Spacer(modifier = Modifier.width(16.dp))
-                                Text("SEGMENT LOCKED", style = MaterialTheme.typography.headlineSmall, color = Color.Black)
-                            }
+                            Icon(Icons.Default.Lock, contentDescription = null, tint = Color.Black, modifier = Modifier.size(32.dp))
+                            Spacer(modifier = Modifier.width(16.dp))
+                            Text("SEGMENT LOCKED", style = MaterialTheme.typography.headlineSmall, color = Color.Black)
                         }
                     }
                 }

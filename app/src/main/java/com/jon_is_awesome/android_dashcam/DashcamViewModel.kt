@@ -7,6 +7,8 @@ import android.os.HandlerThread
 import android.util.Log
 import androidx.camera.core.*
 import androidx.camera.core.ConcurrentCamera.SingleCameraConfig
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.effects.OverlayEffect
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.video.Recorder
@@ -23,6 +25,7 @@ import java.text.SimpleDateFormat
 import java.util.*
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
 
 class DashcamViewModel : ViewModel() {
 
@@ -88,6 +91,7 @@ class DashcamViewModel : ViewModel() {
     
     private var lastFrontBitmap: Bitmap? = null
     private val bitmapLock = Any()
+    private val frameCount = AtomicInteger(0)
 
     private val cameraExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private val effectHandlerThread = HandlerThread("CameraEffectThread").apply { start() }
@@ -157,10 +161,16 @@ class DashcamViewModel : ViewModel() {
             val cameraProvider = cameraProviderFuture.get()
             cameraProvider.unbindAll()
             
-            // Reuse the same OverlayEffect to avoid GL context recreation crashes
-            if (activeOverlayEffect == null) {
-                activeOverlayEffect = createOverlayEffect()
+            // Reset state
+            frameCount.set(0)
+            synchronized(bitmapLock) {
+                lastFrontBitmap?.recycle()
+                lastFrontBitmap = null
             }
+            
+            // Recreate effect to ensure fresh state
+            activeOverlayEffect?.close()
+            activeOverlayEffect = createOverlayEffect()
             val overlayEffect = activeOverlayEffect!!
 
             // Setup Primary (Back) Camera
@@ -175,13 +185,24 @@ class DashcamViewModel : ViewModel() {
             // Setup Secondary (Front) Camera Analysis for PiP
             var frontAnalysis: ImageAnalysis? = null
             if (_useDualCamera.value && _isDualCameraSupported.value) {
+                Log.d("Dashcam", "Setting up front camera analyzer")
+                
+                val resSelector = ResolutionSelector.Builder()
+                    .setResolutionStrategy(ResolutionStrategy(android.util.Size(640, 480), ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER))
+                    .build()
+
                 frontAnalysis = ImageAnalysis.Builder()
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                    .setTargetResolution(android.util.Size(640, 480))
+                    .setResolutionSelector(resSelector)
                     .build()
                 
                 frontAnalysis.setAnalyzer(cameraExecutor) { imageProxy ->
                     try {
+                        val count = frameCount.incrementAndGet()
+                        if (count % 30 == 1) {
+                            Log.d("Dashcam", "Analyzer frame #$count: ${imageProxy.width}x${imageProxy.height}, rot: ${imageProxy.imageInfo.rotationDegrees}")
+                        }
+                        
                         val bitmap = imageProxy.toBitmap()
                         val rotation = imageProxy.imageInfo.rotationDegrees
                         
@@ -194,18 +215,18 @@ class DashcamViewModel : ViewModel() {
                             bitmap
                         }
 
+                        var old: Bitmap? = null
                         synchronized(bitmapLock) {
-                            val old = lastFrontBitmap
+                            old = lastFrontBitmap
                             lastFrontBitmap = rotatedBitmap
-                            old?.recycle()
                         }
+                        old?.recycle()
                     } catch (e: Exception) {
                         Log.e("Dashcam", "Error analyzing front camera frame", e)
                     } finally {
                         imageProxy.close()
                     }
                 }
-                Log.d("Dashcam", "Front camera analyzer initialized")
             }
 
             val settings = settingsManager
@@ -220,7 +241,6 @@ class DashcamViewModel : ViewModel() {
 
             try {
                 if (_useDualCamera.value && _isDualCameraSupported.value && frontAnalysis != null) {
-                    // Correct way to bind concurrent cameras
                     val backGroup = UseCaseGroup.Builder()
                         .addUseCase(primaryPreview)
                         .addUseCase(primaryVC)
@@ -233,7 +253,7 @@ class DashcamViewModel : ViewModel() {
                     val configs = mutableListOf<SingleCameraConfig>()
                     val concurrentInfos = cameraProvider.availableConcurrentCameraInfos
                     if (concurrentInfos.isNotEmpty()) {
-                        val pair = concurrentInfos[0] // Take the first available pair
+                        val pair = concurrentInfos[0]
                         for (info in pair) {
                             if (info.lensFacing == CameraSelector.LENS_FACING_BACK) {
                                 configs.add(SingleCameraConfig(info.cameraSelector, backGroup, lifecycleOwner))
@@ -247,7 +267,6 @@ class DashcamViewModel : ViewModel() {
                         cameraProvider.bindToLifecycle(configs)
                         Log.d("Dashcam", "Successfully bound concurrent cameras")
                     } else {
-                        // Fallback if pair logic fails
                         Log.w("Dashcam", "Could not form configs for concurrent camera, falling back to back only")
                         cameraProvider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, backGroup)
                     }
@@ -286,9 +305,19 @@ class DashcamViewModel : ViewModel() {
             strokeWidth = 4f
         }
 
+        val solidBlackPaint = Paint().apply {
+            color = Color.BLACK
+            style = Paint.Style.FILL
+        }
+
+        val placeholderPaint = Paint().apply {
+            color = Color.DKGRAY
+            style = Paint.Style.FILL
+        }
+
         val overlayEffect = OverlayEffect(
             CameraEffect.VIDEO_CAPTURE or CameraEffect.PREVIEW,
-            1,
+            2,
             effectHandler
         ) { throwable ->
             Log.e("Dashcam", "OverlayEffect error", throwable)
@@ -298,24 +327,19 @@ class DashcamViewModel : ViewModel() {
             val canvas = frame.overlayCanvas
             val width = canvas.width.toFloat()
             val height = canvas.height.toFloat()
-            
-            canvas.save()
-            
-            // Rotate the canvas around its center to handle output rotation
             val rotation = frame.rotationDegrees.toFloat()
-            canvas.rotate(rotation, width / 2f, height / 2f)
             
             // Visually upright dimensions
             val isRotated = frame.rotationDegrees == 90 || frame.rotationDegrees == 270
             val vWidth = if (isRotated) height else width
             val vHeight = if (isRotated) width else height
             
-            // Translation to align (0,0) with the visible top-left
-            when (rotation) {
-                90f -> canvas.translate(0f, -width)
-                180f -> canvas.translate(-width, -height)
-                270f -> canvas.translate(-height, 0f)
-            }
+            canvas.save()
+            
+            // Coordinate system normalization
+            canvas.translate(width / 2f, height / 2f)
+            canvas.rotate(rotation)
+            canvas.translate(-vWidth / 2f, -vHeight / 2f)
 
             // 1. Draw Telemetry
             val data = telemetryData.value
@@ -342,24 +366,35 @@ class DashcamViewModel : ViewModel() {
                     val bitmap = lastFrontBitmap
                     val now = System.currentTimeMillis()
                     if (now - lastLogTime > 5000) {
-                        Log.d("Dashcam", "Overlay drawing. PiP Enabled: true, Has Bitmap: ${bitmap != null}")
+                        Log.d("Dashcam", "Overlay draw. Has Bitmap: ${bitmap != null}, count: ${frameCount.get()}, canvas: ${width}x${height}, rot: $rotation")
                         lastLogTime = now
                     }
 
-                    if (bitmap != null && !bitmap.isRecycled) {
-                        val pipWidth = vWidth / 3.5f
-                        val pipHeight = (bitmap.height.toFloat() / bitmap.width.toFloat() * pipWidth)
-                        val rect = RectF(vWidth - pipWidth - 30f, 30f, vWidth - 30f, 30f + pipHeight)
-                        
-                        canvas.drawRect(rect.left - 2f, rect.top - 2f, rect.right + 2f, rect.bottom + 2f, borderPaint)
-                        canvas.drawBitmap(bitmap, null, rect, null)
+                    // piP dimensions: approx 40% of width
+                    val pipWidth = vWidth * 0.4f
+                    val pipHeight = if (bitmap != null) {
+                        (bitmap.height.toFloat() / bitmap.width.toFloat() * pipWidth)
                     } else {
-                        // Optional: draw a placeholder if we're supposed to have PiP but no frame yet
-                        val pipWidth = vWidth / 3.5f
-                        val pipHeight = pipWidth * 1.33f
-                        val rect = RectF(vWidth - pipWidth - 30f, 30f, vWidth - 30f, 30f + pipHeight)
-                        canvas.drawRect(rect, bgPaint)
+                        pipWidth * 1.33f
+                    }
+                    
+                    // Position: Middle Right
+                    val rect = RectF(vWidth - pipWidth - 40f, vHeight / 4f, vWidth - 40f, vHeight / 4f + pipHeight)
+                    
+                    if (bitmap != null && !bitmap.isRecycled) {
+                        // Draw a slightly larger black background for contrast
+                        canvas.drawRect(rect.left - 6f, rect.top - 6f, rect.right + 6f, rect.bottom + 6f, solidBlackPaint)
+                        canvas.drawBitmap(bitmap, null, rect, null)
                         canvas.drawRect(rect, borderPaint)
+                    } else {
+                        // Very visible placeholder
+                        canvas.drawRect(rect, placeholderPaint)
+                        canvas.drawRect(rect, borderPaint)
+                        paint.textSize = 30f
+                        val msg = if (frameCount.get() > 0) "PROCESSING..." else "CONNECTING..."
+                        val tw = paint.measureText(msg)
+                        canvas.drawText(msg, rect.centerX() - tw/2, rect.centerY(), paint)
+                        paint.textSize = 40f
                     }
                 }
             }
