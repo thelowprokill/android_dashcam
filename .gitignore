@@ -1,0 +1,5 @@
+.agent/
+.gradle/
+.idea/
+build/
+local.properties
