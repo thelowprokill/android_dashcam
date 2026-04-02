@@ -175,7 +175,7 @@ class DashcamViewModel : ViewModel() {
             activeOverlayEffect = createOverlayEffect()
             val overlayEffect = activeOverlayEffect!!
 
-            // Setup Primary (Back) Camera
+            // Setup Primary (Back) Camera UseCases
             val primaryRecorder = Recorder.Builder().build()
             val primaryVC = VideoCapture.withOutput(primaryRecorder)
             primaryVideoCapture = primaryVC
@@ -184,19 +184,14 @@ class DashcamViewModel : ViewModel() {
                 setSurfaceProvider(previewView.surfaceProvider)
             }
 
-            // Setup Secondary (Front) Camera Analysis for PiP
+            // Setup Secondary (Front) Camera UseCase for PiP
             var frontAnalysis: ImageAnalysis? = null
             if (_useDualCamera.value && _isDualCameraSupported.value) {
                 Log.d("Dashcam", "Setting up front camera analyzer")
                 
-                val resSelector = ResolutionSelector.Builder()
-                    .setResolutionStrategy(ResolutionStrategy(android.util.Size(640, 480), ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER))
-                    .build()
-
                 frontAnalysis = ImageAnalysis.Builder()
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                    .setResolutionSelector(resSelector)
-                    .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
+                    .setTargetResolution(android.util.Size(640, 480))
                     .build()
                 
                 frontAnalysis.setAnalyzer(cameraExecutor) { imageProxy ->
@@ -244,13 +239,20 @@ class DashcamViewModel : ViewModel() {
 
             try {
                 if (_useDualCamera.value && _isDualCameraSupported.value && frontAnalysis != null) {
+                    // Concurrent camera requires identical ViewPort and Effects across groups
+                    val viewPort = previewView.viewPort
+                    
                     val backGroup = UseCaseGroup.Builder()
                         .addUseCase(primaryPreview)
                         .addUseCase(primaryVC)
                         .addEffect(overlayEffect)
+                        .apply { viewPort?.let { setViewPort(it) } }
                         .build()
+                        
                     val frontGroup = UseCaseGroup.Builder()
                         .addUseCase(frontAnalysis)
+                        .addEffect(overlayEffect) // Must add same effect instance
+                        .apply { viewPort?.let { setViewPort(it) } }
                         .build()
                     
                     val configs = mutableListOf<SingleCameraConfig>()
@@ -319,7 +321,7 @@ class DashcamViewModel : ViewModel() {
 
         val overlayEffect = OverlayEffect(
             CameraEffect.VIDEO_CAPTURE or CameraEffect.PREVIEW,
-            1,
+            2,
             effectHandler
         ) { throwable ->
             Log.e("Dashcam", "OverlayEffect error", throwable)
@@ -338,7 +340,7 @@ class DashcamViewModel : ViewModel() {
             
             canvas.save()
             
-            // Normalization: Align drawing with the visible screen orientation
+            // Coordinate system normalization
             canvas.translate(width / 2f, height / 2f)
             canvas.rotate(rotation)
             canvas.translate(-vWidth / 2f, -vHeight / 2f)
@@ -385,17 +387,18 @@ class DashcamViewModel : ViewModel() {
                     val rect = RectF(vWidth - pipWidth - 40f, vHeight / 4f, vWidth - 40f, vHeight / 4f + pipHeight)
                     
                     if (bitmap != null && !bitmap.isRecycled) {
-                        // Draw black background border
-                        canvas.drawRect(rect.left - 6f, rect.top - 6f, rect.right + 6f, rect.bottom + 6f, solidBlackPaint)
+                        // Draw a black background border
+                        val solidBlack = Paint().apply { color = Color.BLACK; style = Paint.Style.FILL }
+                        canvas.drawRect(rect.left - 6f, rect.top - 6f, rect.right + 6f, rect.bottom + 6f, solidBlack)
                         canvas.drawBitmap(bitmap, null, rect, null)
                         canvas.drawRect(rect, borderPaint)
                     } else {
-                        // Very visible placeholder to confirm OverlayEffect is drawing
-                        val placeholderPaint = Paint().apply { color = Color.DKGRAY; style = Paint.Style.FILL }
-                        canvas.drawRect(rect, placeholderPaint)
+                        // Very visible placeholder
+                        val dGray = Paint().apply { color = Color.DKGRAY; style = Paint.Style.FILL }
+                        canvas.drawRect(rect, dGray)
                         canvas.drawRect(rect, borderPaint)
                         paint.textSize = 30f
-                        val msg = if (frameCount.get() > 0) "PROCESSING..." else "CONNECTING..."
+                        val msg = if (frameCount.get() > 0) "PROCESSING..." else "STARTING..."
                         val tw = paint.measureText(msg)
                         canvas.drawText(msg, rect.centerX() - tw/2, rect.centerY(), paint)
                         paint.textSize = 40f
