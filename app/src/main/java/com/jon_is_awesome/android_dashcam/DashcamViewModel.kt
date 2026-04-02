@@ -62,6 +62,9 @@ class DashcamViewModel : ViewModel() {
     private val _showTimestamp = MutableStateFlow(true)
     val showTimestamp: StateFlow<Boolean> = _showTimestamp.asStateFlow()
 
+    private val _useMetric = MutableStateFlow(true)
+    val useMetric: StateFlow<Boolean> = _useMetric.asStateFlow()
+
     val isRecording: StateFlow<Boolean> = flow {
         while (true) {
             emit(recordingManager?.isRecording?.value ?: false)
@@ -112,6 +115,7 @@ class DashcamViewModel : ViewModel() {
         settings.showCoordinates.onEach { _showCoordinates.value = it }.launchIn(viewModelScope)
         settings.showAltitude.onEach { _showAltitude.value = it }.launchIn(viewModelScope)
         settings.showTimestamp.onEach { _showTimestamp.value = it }.launchIn(viewModelScope)
+        settings.useMetric.onEach { _useMetric.value = it }.launchIn(viewModelScope)
 
         _isInitialized.value = true
         
@@ -297,7 +301,7 @@ class DashcamViewModel : ViewModel() {
     private fun createOverlayEffect(): OverlayEffect {
         val paint = Paint().apply {
             color = Color.YELLOW
-            textSize = 40f
+            textSize = 24f
             typeface = Typeface.MONOSPACE
             style = Paint.Style.FILL
             setShadowLayer(2f, 1f, 1f, Color.BLACK)
@@ -311,16 +315,12 @@ class DashcamViewModel : ViewModel() {
         val borderPaint = Paint().apply {
             color = Color.WHITE
             style = Paint.Style.STROKE
-            strokeWidth = 4f
+            strokeWidth = 2f
         }
 
-        val solidBlackPaint = Paint().apply {
-            color = Color.BLACK
-            style = Paint.Style.FILL
-        }
-
+        // Apply only to VIDEO_CAPTURE to hide from app view (phone screen has its own overlay)
         val overlayEffect = OverlayEffect(
-            CameraEffect.VIDEO_CAPTURE or CameraEffect.PREVIEW,
+            CameraEffect.VIDEO_CAPTURE,
             2,
             effectHandler
         ) { throwable ->
@@ -332,77 +332,82 @@ class DashcamViewModel : ViewModel() {
             val width = canvas.width.toFloat()
             val height = canvas.height.toFloat()
             val rotation = frame.rotationDegrees.toFloat()
-            
-            // Visually upright dimensions
+
+            // Normalize coordinate system so (0,0) is visually top-left
             val isRotated = frame.rotationDegrees == 90 || frame.rotationDegrees == 270
             val vWidth = if (isRotated) height else width
             val vHeight = if (isRotated) width else height
             
             canvas.save()
-            
-            // Coordinate system normalization
+            // 1. Normalize to "visually upright" coordinate system
+            // Added 180 degrees to flip as requested
             canvas.translate(width / 2f, height / 2f)
-            canvas.rotate(rotation)
+            canvas.rotate(rotation + 180f)
             canvas.translate(-vWidth / 2f, -vHeight / 2f)
 
-            // 1. Draw Telemetry
+            // 2. Draw PiP (Front Camera) in visual Top Right
+            if (_useDualCamera.value) {
+                synchronized(bitmapLock) {
+                    val bitmap = lastFrontBitmap
+                    val pipHeight = vHeight * 0.25f
+                    val pipWidth = if (bitmap != null) {
+                        (bitmap.width.toFloat() / bitmap.height.toFloat() * pipHeight)
+                    } else {
+                        pipHeight * 1.33f
+                    }
+                    val rect = RectF(vWidth - pipWidth - 30f, 30f, vWidth - 30f, 30f + pipHeight)
+                    if (bitmap != null && !bitmap.isRecycled) {
+                        val solidBlack = Paint().apply { color = Color.BLACK; style = Paint.Style.FILL }
+                        canvas.drawRect(rect.left - 4f, rect.top - 4f, rect.right + 4f, rect.bottom + 4f, solidBlack)
+                        canvas.drawBitmap(bitmap, null, rect, null)
+                        canvas.drawRect(rect, borderPaint)
+                    } else {
+                        val dGray = Paint().apply { color = Color.DKGRAY; style = Paint.Style.FILL }
+                        canvas.drawRect(rect, dGray)
+                        canvas.drawRect(rect, borderPaint)
+                    }
+                }
+            }
+
+            // 3. Draw Telemetry in visual Bottom Left, stacked upright
             val data = telemetryData.value
+            val isMetric = _useMetric.value
             val lines = mutableListOf<String>()
-            if (_showSpeed.value) lines.add(String.format(Locale.getDefault(), "%.1f km/h", data.speedKmh))
+            
+            if (_showSpeed.value) {
+                if (isMetric) {
+                    lines.add(String.format(Locale.getDefault(), "%.1f km/h", data.speedKmh))
+                } else {
+                    val speedMph = data.speedKmh * 0.621371f
+                    lines.add(String.format(Locale.getDefault(), "%.1f mph", speedMph))
+                }
+            }
             if (_showCoordinates.value) lines.add(String.format(Locale.getDefault(), "%.6f, %.6f", data.latitude, data.longitude))
-            if (_showAltitude.value) lines.add(String.format(Locale.getDefault(), "Alt: %.1f m", data.altitude))
+            if (_showAltitude.value) {
+                if (isMetric) {
+                    lines.add(String.format(Locale.getDefault(), "Alt: %.1f m", data.altitude))
+                } else {
+                    val altitudeFt = data.altitude * 3.28084
+                    lines.add(String.format(Locale.getDefault(), "Alt: %.1f ft", altitudeFt))
+                }
+            }
             if (_showTimestamp.value) {
                 val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
                 lines.add(sdf.format(Date()))
             }
-            
-            var yOffset = vHeight - 40f
-            for (line in lines.reversed()) {
-                val textWidth = paint.measureText(line)
-                canvas.drawRect(20f, yOffset - 35f, 30f + textWidth, yOffset + 10f, bgPaint)
-                canvas.drawText(line, 25f, yOffset, paint)
-                yOffset -= 50f
-            }
-            
-            // 2. Draw PiP (Front Camera)
-            if (_useDualCamera.value) {
-                synchronized(bitmapLock) {
-                    val bitmap = lastFrontBitmap
-                    val dCount = drawCount.incrementAndGet()
-                    val now = System.currentTimeMillis()
-                    if (now - lastLogTime > 5000) {
-                        Log.d("Dashcam", "Overlay draw #$dCount. Has Bitmap: ${bitmap != null}, count: ${frameCount.get()}, canvas: ${width}x${height}, rot: $rotation")
-                        lastLogTime = now
-                    }
 
-                    // piP dimensions: approx 40% of width
-                    val pipWidth = vWidth * 0.4f
-                    val pipHeight = if (bitmap != null) {
-                        (bitmap.height.toFloat() / bitmap.width.toFloat() * pipWidth)
-                    } else {
-                        pipWidth * 1.33f
-                    }
-                    
-                    // Position: Middle Right, clear of TopAppBar
-                    val rect = RectF(vWidth - pipWidth - 40f, vHeight / 4f, vWidth - 40f, vHeight / 4f + pipHeight)
-                    
-                    if (bitmap != null && !bitmap.isRecycled) {
-                        // Draw a black background border
-                        val solidBlack = Paint().apply { color = Color.BLACK; style = Paint.Style.FILL }
-                        canvas.drawRect(rect.left - 6f, rect.top - 6f, rect.right + 6f, rect.bottom + 6f, solidBlack)
-                        canvas.drawBitmap(bitmap, null, rect, null)
-                        canvas.drawRect(rect, borderPaint)
-                    } else {
-                        // Very visible placeholder
-                        val dGray = Paint().apply { color = Color.DKGRAY; style = Paint.Style.FILL }
-                        canvas.drawRect(rect, dGray)
-                        canvas.drawRect(rect, borderPaint)
-                        paint.textSize = 30f
-                        val msg = if (frameCount.get() > 0) "PROCESSING..." else "STARTING..."
-                        val tw = paint.measureText(msg)
-                        canvas.drawText(msg, rect.centerX() - tw/2, rect.centerY(), paint)
-                        paint.textSize = 40f
-                    }
+            if (lines.isNotEmpty()) {
+                // Smaller text for recording
+                val textSize = vHeight * 0.025f
+                paint.textSize = textSize
+                
+                // Draw stacked from bottom up in the visual Bottom Left
+                var yPos = vHeight - 30f
+                for (line in lines.reversed()) {
+                    val textWidth = paint.measureText(line)
+                    canvas.drawRect(30f - 5f, yPos - textSize + 5f, 30f + textWidth + 5f, yPos + 5f, bgPaint)
+                    canvas.drawText(line, 30f, yPos, paint)
+                    yPos -= textSize * 1.3f
                 }
             }
             
@@ -458,6 +463,13 @@ class DashcamViewModel : ViewModel() {
         viewModelScope.launch { 
             settingsManager?.setShowTimestamp(show)
             _showTimestamp.value = show
+        }
+    }
+
+    fun setUseMetric(metric: Boolean) {
+        viewModelScope.launch {
+            settingsManager?.setUseMetric(metric)
+            _useMetric.value = metric
         }
     }
 

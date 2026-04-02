@@ -102,6 +102,7 @@ fun DashcamScreen(
     val showCoordinates by viewModel.showCoordinates.collectAsStateWithLifecycle()
     val showAltitude by viewModel.showAltitude.collectAsStateWithLifecycle()
     val showTimestamp by viewModel.showTimestamp.collectAsStateWithLifecycle()
+    val useMetric by viewModel.useMetric.collectAsStateWithLifecycle()
 
     LaunchedEffect(permissionsState.allPermissionsGranted) {
         if (permissionsState.allPermissionsGranted) {
@@ -180,13 +181,14 @@ fun DashcamScreen(
                     modifier = Modifier.fillMaxSize()
                 )
                 
-                // Telemetry Overlay
+                // In-App Telemetry Overlay (Independent of recording overlay)
                 TelemetryOverlay(
                     data = telemetryData,
                     showSpeed = showSpeed,
                     showCoordinates = showCoordinates,
                     showAltitude = showAltitude,
                     showTimestamp = showTimestamp,
+                    useMetric = useMetric,
                     modifier = Modifier
                         .align(Alignment.BottomStart)
                         .padding(bottom = 120.dp, start = 16.dp, end = 16.dp)
@@ -269,6 +271,94 @@ fun DashcamScreen(
     }
 }
 
+@Composable
+fun TelemetryOverlay(
+    data: TelemetryData,
+    showSpeed: Boolean,
+    showCoordinates: Boolean,
+    showAltitude: Boolean,
+    showTimestamp: Boolean,
+    useMetric: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+    val timeString = dateFormat.format(Date(data.timestamp))
+
+    if (!showSpeed && !showCoordinates && !showAltitude && !showTimestamp) return
+
+    Surface(
+        color = Color.Black.copy(alpha = 0.5f),
+        shape = RoundedCornerShape(12.dp),
+        modifier = modifier
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp)
+        ) {
+            if (showSpeed) {
+                val displaySpeed = if (useMetric) data.speedKmh else data.speedKmh * 0.621371f
+                val unit = if (useMetric) "km/h" else "mph"
+                Row(verticalAlignment = Alignment.Bottom) {
+                    Text(
+                        text = String.format("%.0f", displaySpeed),
+                        style = MaterialTheme.typography.displayMedium.copy(
+                            color = Color.Yellow,
+                            fontWeight = FontWeight.Black,
+                            fontSize = 48.sp
+                        )
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = unit,
+                        style = MaterialTheme.typography.labelLarge.copy(color = Color.White),
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+            }
+            
+            if (showCoordinates) {
+                TelemetryRow(label = "LAT:", value = String.format("%.6f", data.latitude))
+                TelemetryRow(label = "LON:", value = String.format("%.6f", data.longitude))
+            }
+            
+            if (showAltitude) {
+                val displayAltitude = if (useMetric) data.altitude else data.altitude * 3.28084
+                val unit = if (useMetric) "m" else "ft"
+                TelemetryRow(label = "ALT:", value = String.format("%.1f %s", displayAltitude, unit))
+            }
+            
+            if (showTimestamp) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = timeString,
+                    style = MaterialTheme.typography.labelMedium.copy(
+                        color = Color.White.copy(alpha = 0.8f),
+                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                    )
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun TelemetryRow(label: String, value: String) {
+    Row {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall.copy(color = Color.White.copy(alpha = 0.6f)),
+            modifier = Modifier.width(40.dp)
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.labelSmall.copy(
+                color = Color.White,
+                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+            )
+        )
+    }
+}
+
 fun formatDuration(millis: Long): String {
     val hours = TimeUnit.MILLISECONDS.toHours(millis)
     val minutes = TimeUnit.MILLISECONDS.toMinutes(millis) % 60
@@ -317,88 +407,5 @@ fun PermissionRequestScreen(permissionsState: com.google.accompanist.permissions
         ) {
             Text("Grant Permissions")
         }
-    }
-}
-
-@Composable
-fun TelemetryOverlay(
-    data: TelemetryData,
-    showSpeed: Boolean,
-    showCoordinates: Boolean,
-    showAltitude: Boolean,
-    showTimestamp: Boolean,
-    modifier: Modifier = Modifier
-) {
-    val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
-    val timeString = dateFormat.format(Date(data.timestamp))
-
-    if (!showSpeed && !showCoordinates && !showAltitude && !showTimestamp) return
-
-    Surface(
-        color = Color.Black.copy(alpha = 0.5f),
-        shape = RoundedCornerShape(12.dp),
-        modifier = modifier
-    ) {
-        Column(
-            modifier = Modifier.padding(16.dp)
-        ) {
-            if (showSpeed) {
-                Row(verticalAlignment = Alignment.Bottom) {
-                    Text(
-                        text = String.format("%.0f", data.speedKmh),
-                        style = MaterialTheme.typography.displayMedium.copy(
-                            color = Color.Yellow,
-                            fontWeight = FontWeight.Black,
-                            fontSize = 48.sp
-                        )
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(
-                        text = "km/h",
-                        style = MaterialTheme.typography.labelLarge.copy(color = Color.White),
-                        modifier = Modifier.padding(bottom = 8.dp)
-                    )
-                }
-                Spacer(modifier = Modifier.height(8.dp))
-            }
-            
-            if (showCoordinates) {
-                TelemetryRow(label = "LAT:", value = String.format("%.6f", data.latitude))
-                TelemetryRow(label = "LON:", value = String.format("%.6f", data.longitude))
-            }
-            
-            if (showAltitude) {
-                TelemetryRow(label = "ALT:", value = String.format("%.1f m", data.altitude))
-            }
-            
-            if (showTimestamp) {
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = timeString,
-                    style = MaterialTheme.typography.labelMedium.copy(
-                        color = Color.White.copy(alpha = 0.8f),
-                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
-                    )
-                )
-            }
-        }
-    }
-}
-
-@Composable
-fun TelemetryRow(label: String, value: String) {
-    Row {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall.copy(color = Color.White.copy(alpha = 0.6f)),
-            modifier = Modifier.width(40.dp)
-        )
-        Text(
-            text = value,
-            style = MaterialTheme.typography.labelSmall.copy(
-                color = Color.White,
-                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
-            )
-        )
     }
 }

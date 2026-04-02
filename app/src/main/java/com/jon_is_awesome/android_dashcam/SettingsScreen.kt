@@ -11,6 +11,7 @@ import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Height
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.SquareFoot
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -30,6 +31,7 @@ fun SettingsScreen(
     val showCoordinates by viewModel.showCoordinates.collectAsStateWithLifecycle()
     val showAltitude by viewModel.showAltitude.collectAsStateWithLifecycle()
     val showTimestamp by viewModel.showTimestamp.collectAsStateWithLifecycle()
+    val useMetric by viewModel.useMetric.collectAsStateWithLifecycle()
 
     Scaffold(
         topBar = {
@@ -106,6 +108,13 @@ fun SettingsScreen(
                 checked = showTimestamp,
                 onCheckedChange = { viewModel.setShowTimestamp(it) },
                 icon = Icons.Default.Schedule
+            )
+
+            SettingsSwitchItem(
+                title = "Use Metric Units",
+                checked = useMetric,
+                onCheckedChange = { viewModel.setUseMetric(it) },
+                icon = Icons.Default.SquareFoot
             )
             
             HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))

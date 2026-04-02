@@ -27,7 +27,7 @@ class RecordingManager(
     private var primaryRecording: Recording? = null
     private var secondaryRecording: Recording? = null
     private var recordingJob: Job? = null
-    private var telemetryLoggingJob: Job? = null
+    private val telemetryLoggingJobs = mutableListOf<Job>()
     private var durationJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
@@ -45,6 +45,7 @@ class RecordingManager(
 
     private var segmentLengthMinutes: Int = 5
     private var storageLocation: String = "Movies/Dashcam"
+    private var useMetric: Boolean = true
     private var isCurrentSegmentLocked = false
     
     private var recordingStartTime = 0L
@@ -59,6 +60,11 @@ class RecordingManager(
         scope.launch {
             settingsManager.storageLocation.collect {
                 storageLocation = it ?: "Movies/Dashcam"
+            }
+        }
+        scope.launch {
+            settingsManager.useMetric.collect {
+                useMetric = it
             }
         }
     }
@@ -105,9 +111,13 @@ class RecordingManager(
                 secondaryRecording = startRecordingForCamera(it, frontName)
             }
             
-            startTelemetryLogging(backName)
+            // Cancel previous logging jobs if any
+            telemetryLoggingJobs.forEach { it.cancel() }
+            telemetryLoggingJobs.clear()
+            
+            telemetryLoggingJobs.add(startTelemetryLogging(backName))
             if (secondaryVideoCapture != null) {
-                startTelemetryLogging(frontName)
+                telemetryLoggingJobs.add(startTelemetryLogging(frontName))
             }
             
             startLoopTimer()
@@ -155,7 +165,6 @@ class RecordingManager(
                     val uri = recordEvent.outputResults.outputUri
                     if (recordEvent.hasError()) {
                         Log.e("RecordingManager", "Recording error: ${recordEvent.error}, message: ${recordEvent.cause?.message}")
-                        // If it's a fatal error and we were supposed to be recording, try to recover?
                     }
                     if (!recordEvent.hasError() && isCurrentSegmentLocked) {
                         protectSegment(uri)
@@ -164,10 +173,10 @@ class RecordingManager(
             }
     }
 
-    private fun startTelemetryLogging(videoName: String) {
+    private fun startTelemetryLogging(videoName: String): Job {
         val srtName = "$videoName.srt"
         
-        scope.launch(Dispatchers.IO) {
+        return scope.launch(Dispatchers.IO) {
             var outputStream: OutputStream? = null
             try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -186,6 +195,9 @@ class RecordingManager(
                     val logDir = File(context.getExternalFilesDir(null), "telemetry")
                     if (!logDir.exists()) logDir.mkdirs()
                     outputStream = java.io.FileOutputStream(File(logDir, srtName))
+                    Log.d("RecordingManager", "Logging telemetry to fallback location: ${logDir.absolutePath}/$srtName")
+                } else {
+                    Log.d("RecordingManager", "Logging telemetry to MediaStore: $srtName")
                 }
 
                 outputStream?.use { stream ->
@@ -199,9 +211,16 @@ class RecordingManager(
                         
                         out.write("${index++}\n")
                         out.write("${formatTime(currentTime)} --> ${formatTime(nextTime)}\n")
-                        out.write(String.format(Locale.getDefault(), "Speed: %.1f km/h\n", data.speedKmh))
-                        out.write(String.format(Locale.getDefault(), "Pos: %.6f, %.6f\n", data.latitude, data.longitude))
-                        out.write(String.format(Locale.getDefault(), "Alt: %.1f m\n\n", data.altitude))
+                        
+                        if (useMetric) {
+                            out.write(String.format(Locale.getDefault(), "Speed: %.1f km/h\n", data.speedKmh))
+                            out.write(String.format(Locale.getDefault(), "Alt: %.1f m\n", data.altitude))
+                        } else {
+                            out.write(String.format(Locale.getDefault(), "Speed: %.1f mph\n", data.speedKmh * 0.621371f))
+                            out.write(String.format(Locale.getDefault(), "Alt: %.1f ft\n", data.altitude * 3.28084))
+                        }
+                        
+                        out.write(String.format(Locale.getDefault(), "Pos: %.6f, %.6f\n\n", data.latitude, data.longitude))
                         out.flush()
                         
                         delay(1000)
@@ -210,7 +229,7 @@ class RecordingManager(
             } catch (e: Exception) {
                 Log.e("RecordingManager", "Failed to write telemetry log: $srtName", e)
             } finally {
-                outputStream?.close()
+                try { outputStream?.close() } catch (e: Exception) {}
             }
         }
     }
@@ -254,7 +273,8 @@ class RecordingManager(
     fun stopRecording() {
         _isRecording.value = false
         recordingJob?.cancel()
-        telemetryLoggingJob?.cancel()
+        telemetryLoggingJobs.forEach { it.cancel() }
+        telemetryLoggingJobs.clear()
         durationJob?.cancel()
         primaryRecording?.stop()
         secondaryRecording?.stop()
