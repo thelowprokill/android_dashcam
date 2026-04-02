@@ -243,51 +243,52 @@ class DashcamViewModel : ViewModel() {
 
             try {
                 if (_useDualCamera.value && _isDualCameraSupported.value && frontAnalysis != null) {
-                    // Concurrent camera requires identical ViewPort and Effects across groups
-                    val viewPort = previewView.viewPort
-                    
-                    val backGroup = UseCaseGroup.Builder()
-                        .addUseCase(primaryPreview)
-                        .addUseCase(primaryVC)
-                        .addEffect(overlayEffect)
-                        .apply { viewPort?.let { setViewPort(it) } }
-                        .build()
-                        
-                    val frontGroup = UseCaseGroup.Builder()
-                        .addUseCase(frontAnalysis)
-                        .addEffect(overlayEffect) // Must add same effect instance
-                        .apply { viewPort?.let { setViewPort(it) } }
-                        .build()
-                    
-                    val configs = mutableListOf<SingleCameraConfig>()
                     val concurrentInfos = cameraProvider.availableConcurrentCameraInfos
                     Log.d("Dashcam", "Binding concurrent. Available pairs: ${concurrentInfos.size}")
                     
                     if (concurrentInfos.isNotEmpty()) {
                         val pair = concurrentInfos[0]
+                        val configs = mutableListOf<SingleCameraConfig>()
+                        val viewPort = previewView.viewPort
+                        
                         for (info in pair) {
                             val selector = CameraSelector.Builder().addCameraFilter { cameras ->
                                 cameras.filter { it == info }
                             }.build()
                             
-                            val group = if (info.lensFacing == CameraSelector.LENS_FACING_BACK) backGroup else frontGroup
-                            configs.add(SingleCameraConfig(selector, group, lifecycleOwner))
-                            Log.d("Dashcam", "  Added config for lens: ${info.lensFacing}")
+                            val groupBuilder = UseCaseGroup.Builder()
+                                .addEffect(overlayEffect) // Both MUST share the same instance
+                            
+                            if (info.lensFacing == CameraSelector.LENS_FACING_BACK) {
+                                groupBuilder.addUseCase(primaryPreview).addUseCase(primaryVC)
+                            } else {
+                                groupBuilder.addUseCase(frontAnalysis)
+                            }
+                            
+                            viewPort?.let { groupBuilder.setViewPort(it) }
+                            configs.add(SingleCameraConfig(selector, groupBuilder.build(), lifecycleOwner))
                         }
-                    }
-                    
-                    if (configs.size == 2) {
-                        cameraProvider.bindToLifecycle(configs)
-                        Log.d("Dashcam", "Successfully bound concurrent cameras")
-                    } else {
-                        Log.w("Dashcam", "Could not form configs for concurrent camera (size: ${configs.size}), falling back to back only")
-                        cameraProvider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, backGroup)
+                        
+                        if (configs.size == 2) {
+                            cameraProvider.bindToLifecycle(configs)
+                            Log.d("Dashcam", "Successfully bound concurrent cameras")
+                        } else {
+                            Log.w("Dashcam", "Falling back to back camera only")
+                            val backGroup = UseCaseGroup.Builder()
+                                .addUseCase(primaryPreview)
+                                .addUseCase(primaryVC)
+                                .addEffect(overlayEffect)
+                                .apply { viewPort?.let { setViewPort(it) } }
+                                .build()
+                            cameraProvider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, backGroup)
+                        }
                     }
                 } else {
                     val useCaseGroup = UseCaseGroup.Builder()
                         .addUseCase(primaryPreview)
                         .addUseCase(primaryVC)
                         .addEffect(overlayEffect)
+                        .apply { previewView.viewPort?.let { setViewPort(it) } }
                         .build()
                     cameraProvider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, useCaseGroup)
                     Log.d("Dashcam", "Bound primary camera only")
@@ -318,7 +319,7 @@ class DashcamViewModel : ViewModel() {
             strokeWidth = 2f
         }
 
-        // Apply only to VIDEO_CAPTURE to hide from app view (phone screen has its own overlay)
+        // Apply only to VIDEO_CAPTURE to hide from app view
         val overlayEffect = OverlayEffect(
             CameraEffect.VIDEO_CAPTURE,
             2,
@@ -339,13 +340,12 @@ class DashcamViewModel : ViewModel() {
             val vHeight = if (isRotated) width else height
             
             canvas.save()
-            // 1. Normalize to "visually upright" coordinate system
-            // Added 180 degrees to flip as requested
+            // 1. Normalize to "visually upright" coordinate system and flip 180
             canvas.translate(width / 2f, height / 2f)
             canvas.rotate(rotation + 180f)
             canvas.translate(-vWidth / 2f, -vHeight / 2f)
 
-            // 2. Draw PiP (Front Camera) in visual Top Right
+            // 2. Draw PiP (Front Camera) in visual Bottom Right
             if (_useDualCamera.value) {
                 synchronized(bitmapLock) {
                     val bitmap = lastFrontBitmap
@@ -355,7 +355,8 @@ class DashcamViewModel : ViewModel() {
                     } else {
                         pipHeight * 1.33f
                     }
-                    val rect = RectF(vWidth - pipWidth - 30f, 30f, vWidth - 30f, 30f + pipHeight)
+                    val margin = 100f
+                    val rect = RectF(vWidth - pipWidth - margin, vHeight - pipHeight - margin, vWidth - margin, vHeight - margin)
                     if (bitmap != null && !bitmap.isRecycled) {
                         val solidBlack = Paint().apply { color = Color.BLACK; style = Paint.Style.FILL }
                         canvas.drawRect(rect.left - 4f, rect.top - 4f, rect.right + 4f, rect.bottom + 4f, solidBlack)
@@ -397,17 +398,18 @@ class DashcamViewModel : ViewModel() {
             }
 
             if (lines.isNotEmpty()) {
-                // Smaller text for recording
-                val textSize = vHeight * 0.025f
+                // Reduced text size further
+                val textSize = vHeight * 0.015f
                 paint.textSize = textSize
                 
-                // Draw stacked from bottom up in the visual Bottom Left
-                var yPos = vHeight - 30f
+                // Draw stacked from bottom up in the visual Bottom Left with larger margin
+                val margin = 100f
+                var yPos = vHeight - margin
                 for (line in lines.reversed()) {
                     val textWidth = paint.measureText(line)
-                    canvas.drawRect(30f - 5f, yPos - textSize + 5f, 30f + textWidth + 5f, yPos + 5f, bgPaint)
-                    canvas.drawText(line, 30f, yPos, paint)
-                    yPos -= textSize * 1.3f
+                    canvas.drawRect(margin - 10f, yPos - textSize + 5f, margin + textWidth + 10f, yPos + 5f, bgPaint)
+                    canvas.drawText(line, margin, yPos, paint)
+                    yPos -= textSize * 1.4f
                 }
             }
             
