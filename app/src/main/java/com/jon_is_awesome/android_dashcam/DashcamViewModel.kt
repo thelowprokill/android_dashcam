@@ -70,6 +70,9 @@ class DashcamViewModel : ViewModel() {
     private val _maxStorageGb = MutableStateFlow(10)
     val maxStorageGb: StateFlow<Int> = _maxStorageGb.asStateFlow()
 
+    private val _pipPositionX = MutableStateFlow(0.7f) // 0.0 to 1.0 (left to right)
+    val pipPositionX: StateFlow<Float> = _pipPositionX.asStateFlow()
+
     val isRecording: StateFlow<Boolean> = flow {
         while (true) {
             emit(recordingManager?.isRecording?.value ?: false)
@@ -122,6 +125,7 @@ class DashcamViewModel : ViewModel() {
         settings.showTimestamp.onEach { _showTimestamp.value = it }.launchIn(viewModelScope)
         settings.useMetric.onEach { _useMetric.value = it }.launchIn(viewModelScope)
         settings.maxStorageGb.onEach { _maxStorageGb.value = it }.launchIn(viewModelScope)
+        settings.pipPositionX.onEach { _pipPositionX.value = it }.launchIn(viewModelScope)
 
         _isInitialized.value = true
         
@@ -310,7 +314,7 @@ class DashcamViewModel : ViewModel() {
             } else {
                 bindAction.run()
             }
-
+            
         }, ContextCompat.getMainExecutor(context))
     }
 
@@ -349,8 +353,16 @@ class DashcamViewModel : ViewModel() {
                     val bitmap = lastFrontBitmap
                     val pipHeight = vHeight * 0.25f
                     val pipWidth = if (bitmap != null) (bitmap.width.toFloat() / bitmap.height.toFloat() * pipHeight) else pipHeight * 1.33f
-                    val margin = 80f
-                    val rect = RectF(vWidth - pipWidth - margin, vHeight - pipHeight - margin, vWidth - margin, vHeight - margin)
+                    val marginY = 80f
+                    val currentPipX = _pipPositionX.value
+                    
+                    // Calculate left position based on percentage: 0.0 is left, 1.0 is right
+                    // We need to account for pipWidth and margins so it doesn't go off screen
+                    val availableWidth = vWidth - pipWidth - 160f // 80f margin on each side
+                    val left = 80f + (currentPipX * availableWidth)
+                    
+                    val rect = RectF(left, vHeight - pipHeight - marginY, left + pipWidth, vHeight - marginY)
+                    
                     if (bitmap != null && !bitmap.isRecycled) {
                         val solidBlack = Paint().apply { color = Color.BLACK; style = Paint.Style.FILL }
                         canvas.drawRect(rect.left - 4f, rect.top - 4f, rect.right + 4f, rect.bottom + 4f, solidBlack)
@@ -417,6 +429,9 @@ class DashcamViewModel : ViewModel() {
     }
     fun setMaxStorageGb(gb: Int) {
         viewModelScope.launch { settingsManager?.setMaxStorageGb(gb); _maxStorageGb.value = gb }
+    }
+    fun setPipPositionX(x: Float) {
+        viewModelScope.launch { settingsManager?.setPipPositionX(x); _pipPositionX.value = x }
     }
 
     override fun onCleared() {

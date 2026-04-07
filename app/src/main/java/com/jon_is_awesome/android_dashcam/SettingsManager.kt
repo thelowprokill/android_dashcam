@@ -20,6 +20,7 @@ class SettingsManager(private val context: Context) {
         val SHOW_TIMESTAMP = booleanPreferencesKey("show_timestamp")
         val USE_METRIC = booleanPreferencesKey("use_metric")
         val MAX_STORAGE_GB = intPreferencesKey("max_storage_gb")
+        val PIP_POSITION_X = floatPreferencesKey("pip_position_x")
     }
 
     val segmentLengthMinutes: Flow<Int> = context.dataStore.data
@@ -49,6 +50,9 @@ class SettingsManager(private val context: Context) {
 
     val maxStorageGb: Flow<Int> = context.dataStore.data
         .map { preferences -> preferences[MAX_STORAGE_GB] ?: 10 }
+
+    val pipPositionX: Flow<Float> = context.dataStore.data
+        .map { preferences -> preferences[PIP_POSITION_X] ?: 0.7f }
 
     suspend fun setSegmentLength(minutes: Int) {
         context.dataStore.edit { preferences ->
@@ -84,5 +88,9 @@ class SettingsManager(private val context: Context) {
 
     suspend fun setMaxStorageGb(gb: Int) {
         context.dataStore.edit { it[MAX_STORAGE_GB] = gb }
+    }
+
+    suspend fun setPipPositionX(x: Float) {
+        context.dataStore.edit { it[PIP_POSITION_X] = x }
     }
 }

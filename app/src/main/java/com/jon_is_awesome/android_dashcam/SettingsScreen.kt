@@ -12,6 +12,7 @@ import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Height
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.SquareFoot
+import androidx.compose.material.icons.filled.PictureInPicture
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -33,6 +34,7 @@ fun SettingsScreen(
     val showTimestamp by viewModel.showTimestamp.collectAsStateWithLifecycle()
     val useMetric by viewModel.useMetric.collectAsStateWithLifecycle()
     val maxStorageGb by viewModel.maxStorageGb.collectAsStateWithLifecycle()
+    val pipPositionX by viewModel.pipPositionX.collectAsStateWithLifecycle()
 
     Scaffold(
         topBar = {
@@ -73,6 +75,24 @@ fun SettingsScreen(
                 steps = 8,
                 label = "$segmentLength min",
                 icon = Icons.Default.Timer
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+
+            Text(
+                "Dual Camera",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary
+            )
+
+            SettingsSliderItem(
+                title = "PiP Horizontal Position",
+                value = pipPositionX,
+                onValueChange = { viewModel.setPipPositionX(it) },
+                valueRange = 0f..1f,
+                steps = 100,
+                label = "${(pipPositionX * 100).toInt()}%",
+                icon = Icons.Default.PictureInPicture
             )
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
