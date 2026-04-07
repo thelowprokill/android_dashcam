@@ -32,6 +32,7 @@ fun SettingsScreen(
     val showAltitude by viewModel.showAltitude.collectAsStateWithLifecycle()
     val showTimestamp by viewModel.showTimestamp.collectAsStateWithLifecycle()
     val useMetric by viewModel.useMetric.collectAsStateWithLifecycle()
+    val maxStorageGb by viewModel.maxStorageGb.collectAsStateWithLifecycle()
 
     Scaffold(
         topBar = {
@@ -129,6 +130,22 @@ fun SettingsScreen(
                 headlineContent = { Text("Storage Location") },
                 supportingContent = { Text("Movies/Dashcam") },
                 leadingContent = { Icon(Icons.Default.SdStorage, contentDescription = null) }
+            )
+
+            SettingsSliderItem(
+                title = "Max Storage Limit",
+                value = maxStorageGb.toFloat(),
+                onValueChange = { viewModel.setMaxStorageGb(it.toInt()) },
+                valueRange = 2f..100f,
+                steps = 48,
+                label = "$maxStorageGb GB",
+                icon = Icons.Default.SdStorage
+            )
+            Text(
+                "Oldest non-locked videos will be deleted when this limit is reached.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.outline,
+                modifier = Modifier.padding(start = 40.dp)
             )
         }
     }

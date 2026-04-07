@@ -1,5 +1,6 @@
 package com.jon_is_awesome.android_dashcam
 
+import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
 import android.location.Location
@@ -46,6 +47,7 @@ class RecordingManager(
     private var segmentLengthMinutes: Int = 5
     private var storageLocation: String = "Movies/Dashcam"
     private var useMetric: Boolean = true
+    private var maxStorageGb: Int = 10
     private var isCurrentSegmentLocked = false
     
     private var recordingStartTime = 0L
@@ -65,6 +67,11 @@ class RecordingManager(
         scope.launch {
             settingsManager.useMetric.collect {
                 useMetric = it
+            }
+        }
+        scope.launch {
+            settingsManager.maxStorageGb.collect {
+                maxStorageGb = it
             }
         }
     }
@@ -100,6 +107,9 @@ class RecordingManager(
         segmentStartTime = System.currentTimeMillis()
         _segmentDurationMillis.value = 0L
         
+        // Cleanup storage before starting new recording
+        cleanupStorage()
+        
         val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
         
         val backName = "Dashcam-Back-$timestamp"
@@ -124,6 +134,111 @@ class RecordingManager(
         } catch (e: Exception) {
             Log.e("RecordingManager", "Failed to start segment", e)
             _isRecording.value = false
+        }
+    }
+
+    private fun cleanupStorage() {
+        scope.launch(Dispatchers.IO) {
+            try {
+                val maxSizeBytes = maxStorageGb.toLong() * 1024 * 1024 * 1024
+                val projection = arrayOf(
+                    MediaStore.Video.Media._ID,
+                    MediaStore.Video.Media.SIZE,
+                    MediaStore.Video.Media.DATE_ADDED,
+                    MediaStore.Video.Media.RELATIVE_PATH
+                )
+                
+                // We want to count all files in the dashcam folder, but only delete those NOT in "Locked"
+                val selection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    "${MediaStore.Video.Media.RELATIVE_PATH} LIKE ?"
+                } else {
+                    null // Fallback for older versions if needed, but RELATIVE_PATH is Q+
+                }
+                val selectionArgs = arrayOf("$storageLocation%")
+
+                val cursor = context.contentResolver.query(
+                    MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                    projection,
+                    selection,
+                    selectionArgs,
+                    "${MediaStore.Video.Media.DATE_ADDED} ASC"
+                )
+
+                cursor?.use {
+                    var totalSize = 0L
+                    val files = mutableListOf<Triple<Long, Long, String>>() // ID, Size, Path
+                    
+                    val idColumn = it.getColumnIndexOrThrow(MediaStore.Video.Media._ID)
+                    val sizeColumn = it.getColumnIndexOrThrow(MediaStore.Video.Media.SIZE)
+                    val pathColumn = it.getColumnIndexOrThrow(MediaStore.Video.Media.RELATIVE_PATH)
+
+                    while (it.moveToNext()) {
+                        val id = it.getLong(idColumn)
+                        val size = it.getLong(sizeColumn)
+                        val path = it.getString(pathColumn)
+                        totalSize += size
+                        files.add(Triple(id, size, path))
+                    }
+
+                    Log.d("RecordingManager", "Total dashcam storage used: ${totalSize / (1024 * 1024)} MB / ${maxSizeBytes / (1024 * 1024)} MB")
+
+                    var currentSize = totalSize
+                    for (file in files) {
+                        if (currentSize <= maxSizeBytes) break
+                        
+                        // Don't delete locked files
+                        if (file.third.contains("/Locked", ignoreCase = true)) continue
+                        
+                        val uri = ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, file.first)
+                        try {
+                            context.contentResolver.delete(uri, null, null)
+                            currentSize -= file.second
+                            Log.d("RecordingManager", "Deleted oldest video to free space: ID ${file.first}")
+                        } catch (e: Exception) {
+                            Log.e("RecordingManager", "Failed to delete file ${file.first}", e)
+                        }
+                    }
+                }
+                
+                // Also cleanup telemetry files (SRT)
+                cleanupTelemetryFiles(maxSizeBytes)
+                
+            } catch (e: Exception) {
+                Log.e("RecordingManager", "Error during storage cleanup", e)
+            }
+        }
+    }
+
+    private fun cleanupTelemetryFiles(maxSizeBytes: Long) {
+        // Simple cleanup for SRT files in MediaStore
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val projection = arrayOf(MediaStore.Files.FileColumns._ID, MediaStore.Files.FileColumns.SIZE, MediaStore.Files.FileColumns.DATE_ADDED)
+            val selection = "${MediaStore.Files.FileColumns.RELATIVE_PATH} LIKE ? AND ${MediaStore.Files.FileColumns.MIME_TYPE} = ?"
+            val selectionArgs = arrayOf("$storageLocation%", "text/plain")
+            
+            val cursor = context.contentResolver.query(
+                MediaStore.Files.getContentUri("external"),
+                projection,
+                selection,
+                selectionArgs,
+                "${MediaStore.Files.FileColumns.DATE_ADDED} ASC"
+            )
+            
+            cursor?.use {
+                // Since SRT files are tiny, we mostly just want to keep them in sync with videos.
+                // For simplicity, we'll just delete the oldest ones if we have too many or if we are over total budget.
+                // Here we just delete until we have a reasonable amount or they are older than the videos we keep.
+                // But typically dashcam storage is dominated by video.
+                while (it.moveToNext()) {
+                    // Logic to delete oldest SRTs if needed.
+                    // For now, let's just delete the very oldest ones if there's a lot.
+                    if (it.count > 100) {
+                        val id = it.getLong(it.getColumnIndexOrThrow(MediaStore.Files.FileColumns._ID))
+                        val uri = ContentUris.withAppendedId(MediaStore.Files.getContentUri("external"), id)
+                        context.contentResolver.delete(uri, null, null)
+                    } else break
+                }
+            }
         }
     }
 
