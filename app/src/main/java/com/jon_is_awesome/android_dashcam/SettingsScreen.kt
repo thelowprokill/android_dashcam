@@ -13,11 +13,14 @@ import androidx.compose.material.icons.filled.Height
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.SquareFoot
 import androidx.compose.material.icons.filled.PictureInPicture
+import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
@@ -27,6 +30,7 @@ fun SettingsScreen(
     viewModel: DashcamViewModel,
     onBack: () -> Unit
 ) {
+    val context = LocalContext.current
     val segmentLength by viewModel.segmentLengthMinutes.collectAsStateWithLifecycle()
     val showSpeed by viewModel.showSpeed.collectAsStateWithLifecycle()
     val showCoordinates by viewModel.showCoordinates.collectAsStateWithLifecycle()
@@ -35,6 +39,8 @@ fun SettingsScreen(
     val useMetric by viewModel.useMetric.collectAsStateWithLifecycle()
     val maxStorageGb by viewModel.maxStorageGb.collectAsStateWithLifecycle()
     val pipPositionX by viewModel.pipPositionX.collectAsStateWithLifecycle()
+    val useDualCamera by viewModel.useDualCamera.collectAsStateWithLifecycle()
+    val isDualCameraSupported by viewModel.isDualCameraSupported.collectAsStateWithLifecycle()
 
     Scaffold(
         topBar = {
@@ -85,6 +91,23 @@ fun SettingsScreen(
                 color = MaterialTheme.colorScheme.primary
             )
 
+            SettingsSwitchItem(
+                title = "Enable Dual Camera Mode",
+                checked = useDualCamera,
+                onCheckedChange = { viewModel.setUseDualCamera(context, it) },
+                icon = Icons.Default.Cameraswitch,
+                enabled = isDualCameraSupported
+            )
+            
+            if (!isDualCameraSupported) {
+                Text(
+                    "Dual camera is not supported on this device.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(start = 40.dp)
+                )
+            }
+
             SettingsSliderItem(
                 title = "PiP Horizontal Position",
                 value = pipPositionX,
@@ -92,7 +115,8 @@ fun SettingsScreen(
                 valueRange = 0f..1f,
                 steps = 100,
                 label = "${(pipPositionX * 100).toInt()}%",
-                icon = Icons.Default.PictureInPicture
+                icon = Icons.Default.PictureInPicture,
+                enabled = useDualCamera && isDualCameraSupported
             )
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
@@ -179,9 +203,10 @@ fun SettingsSliderItem(
     valueRange: ClosedFloatingPointRange<Float>,
     steps: Int,
     label: String,
-    icon: ImageVector? = null
+    icon: ImageVector? = null,
+    enabled: Boolean = true
 ) {
-    Column(modifier = Modifier.fillMaxWidth()) {
+    Column(modifier = Modifier.fillMaxWidth().then(if (!enabled) Modifier.alpha(0.5f) else Modifier)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             if (icon != null) {
                 Icon(icon, contentDescription = null, modifier = Modifier.size(24.dp), tint = MaterialTheme.colorScheme.secondary)
@@ -197,7 +222,8 @@ fun SettingsSliderItem(
             onValueChange = onValueChange,
             valueRange = valueRange,
             steps = steps,
-            modifier = Modifier.padding(top = 8.dp)
+            modifier = Modifier.padding(top = 8.dp),
+            enabled = enabled
         )
     }
 }
@@ -207,7 +233,8 @@ fun SettingsSwitchItem(
     title: String,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
-    icon: ImageVector? = null
+    icon: ImageVector? = null,
+    enabled: Boolean = true
 ) {
     ListItem(
         headlineContent = { Text(title, style = MaterialTheme.typography.bodyLarge) },
@@ -215,8 +242,10 @@ fun SettingsSwitchItem(
         trailingContent = {
             Switch(
                 checked = checked,
-                onCheckedChange = onCheckedChange
+                onCheckedChange = onCheckedChange,
+                enabled = enabled
             )
-        }
+        },
+        modifier = if (!enabled) Modifier.alpha(0.5f) else Modifier
     )
 }

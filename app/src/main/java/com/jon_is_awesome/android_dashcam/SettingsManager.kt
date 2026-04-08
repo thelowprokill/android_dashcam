@@ -21,6 +21,7 @@ class SettingsManager(private val context: Context) {
         val USE_METRIC = booleanPreferencesKey("use_metric")
         val MAX_STORAGE_GB = intPreferencesKey("max_storage_gb")
         val PIP_POSITION_X = floatPreferencesKey("pip_position_x")
+        val USE_DUAL_CAMERA = booleanPreferencesKey("use_dual_camera")
     }
 
     val segmentLengthMinutes: Flow<Int> = context.dataStore.data
@@ -53,6 +54,9 @@ class SettingsManager(private val context: Context) {
 
     val pipPositionX: Flow<Float> = context.dataStore.data
         .map { preferences -> preferences[PIP_POSITION_X] ?: 0.7f }
+
+    val useDualCamera: Flow<Boolean> = context.dataStore.data
+        .map { preferences -> preferences[USE_DUAL_CAMERA] ?: false }
 
     suspend fun setSegmentLength(minutes: Int) {
         context.dataStore.edit { preferences ->
@@ -92,5 +96,9 @@ class SettingsManager(private val context: Context) {
 
     suspend fun setPipPositionX(x: Float) {
         context.dataStore.edit { it[PIP_POSITION_X] = x }
+    }
+
+    suspend fun setUseDualCamera(use: Boolean) {
+        context.dataStore.edit { it[USE_DUAL_CAMERA] = use }
     }
 }

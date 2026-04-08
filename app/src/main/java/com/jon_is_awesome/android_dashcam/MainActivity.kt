@@ -231,15 +231,20 @@ fun DashcamScreen(
                         }
                     }
                     
-                    if (isDualCameraSupported) {
+                    if (isDualCameraSupported && useDualCamera) {
                         Spacer(modifier = Modifier.height(12.dp))
-                        FilledTonalButton(
-                            onClick = { viewModel.toggleDualCamera(context) },
+                        Surface(
+                            color = Color.Blue.copy(alpha = 0.6f),
                             shape = RoundedCornerShape(8.dp)
                         ) {
-                            Icon(Icons.Default.Videocam, contentDescription = null)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(if (useDualCamera) "Dual Camera: ON" else "Dual Camera: OFF")
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Default.Videocam, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("DUAL MODE", color = Color.White, style = MaterialTheme.typography.labelSmall)
+                            }
                         }
                     }
                 }
